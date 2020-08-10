@@ -1,4 +1,5 @@
 use byteorder::{BigEndian, ByteOrder};
+use std::io::{self, BufRead};
 
 fn main() {
     // Exercise external crate, printing to stdout.
@@ -10,6 +11,14 @@ fn main() {
     // Access program arguments, printing to stderr.
     for arg in std::env::args() {
         eprintln!("{}", arg);
+    }
+
+    // If there were no arguments, access stdin.
+    if std::env::args().len() <= 1 {
+        for line in io::stdin().lock().lines() {
+            let num: i32 = line.unwrap().parse().unwrap();
+            println!("{}", 2*num);
+        }
     }
 }
 

@@ -21,15 +21,16 @@ def cargo_miri(cmd):
         args += ["--target", os.environ['MIRI_TEST_TARGET']]
     return args
 
-def test(name, cmd, stdout_ref, stderr_ref):
+def test(name, cmd, stdout_ref, stderr_ref, stdin=b''):
     print("==> Testing `{}` <==".format(name))
     ## Call `cargo miri`, capture all output
     p = subprocess.Popen(
         cmd,
+        stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE
     )
-    (stdout, stderr) = p.communicate()
+    (stdout, stderr) = p.communicate(input=stdin)
     stdout = stdout.decode("UTF-8")
     stderr = stderr.decode("UTF-8")
     # Show output
@@ -47,12 +48,13 @@ def test(name, cmd, stdout_ref, stderr_ref):
 
 def test_cargo_miri_run():
     test("cargo miri run",
-        cargo_miri("run"),
-        "stdout.ref", "stderr.ref"
+        cargo_miri("run") + ["--", "-Zmiri-disable-isolation"],
+        "stdout.ref", "stderr.ref",
+        stdin=b'12\n21\n'
     )
     test("cargo miri run (with arguments)",
         cargo_miri("run") + ["--", "--", "hello world", '"hello world"'],
-        "stdout.ref", "stderr.ref2"
+        "stdout.ref2", "stderr.ref2"
     )
 
 def test_cargo_miri_test():
