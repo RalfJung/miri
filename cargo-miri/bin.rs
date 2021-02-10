@@ -647,7 +647,7 @@ fn phase_cargo_rustc(args: env::Args) {
         // Forward arguments, but remove "link" from "--emit" to make this a check-only build.
         let emit_flag = "--emit";
         for arg in args {
-            if arg.starts_with(emit_flag) {
+            /*if arg.starts_with(emit_flag) {
                 // Patch this argument. First, extract its value.
                 let val = &arg[emit_flag.len()..];
                 assert!(val.starts_with("="), "`cargo` should pass `--emit=X` as one argument");
@@ -662,7 +662,7 @@ fn phase_cargo_rustc(args: env::Args) {
                     }
                 }
                 cmd.arg(format!("{}={}", emit_flag, val.join(",")));
-            } else {
+            } else*/ {
                 cmd.arg(arg);
             }
         }
@@ -741,7 +741,7 @@ fn phase_cargo_runner(binary: &Path, binary_args: env::Args) {
     let error_format_flag = "--error-format";
     let json_flag = "--json";
     while let Some(arg) = args.next() {
-        if arg == extern_flag {
+        /*if arg == extern_flag {
             cmd.arg(extern_flag); // always forward flag, but adjust filename
             // `--extern` is always passed as a separate argument by cargo.
             let next_arg = args.next().expect("`--extern` should be followed by a filename");
@@ -752,7 +752,7 @@ fn phase_cargo_runner(binary: &Path, binary_args: env::Args) {
                 // Some other extern file (e.g., a `.so`). Forward unchanged.
                 cmd.arg(next_arg);
             }
-        } else if arg.starts_with(error_format_flag) {
+        } else*/ if arg.starts_with(error_format_flag) {
             let suffix = &arg[error_format_flag.len()..];
             assert!(suffix.starts_with('='));
             // Drop this argument.
