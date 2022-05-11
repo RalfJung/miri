@@ -638,6 +638,7 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'mir, 'tcx> {
                 tag,
                 range,
                 machine.stacked_borrows.as_ref().unwrap(),
+                &machine.threads,
             )
         } else {
             Ok(())
@@ -661,6 +662,7 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'mir, 'tcx> {
                 tag,
                 range,
                 machine.stacked_borrows.as_mut().unwrap(),
+                &machine.threads,
             )
         } else {
             Ok(())

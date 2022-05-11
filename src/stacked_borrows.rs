@@ -350,6 +350,7 @@ impl<'tcx> Stack {
         tag: SbTag,
         (alloc_id, range, offset): (AllocId, AllocRange, Size), // just for debug printing and error messages
         global: &GlobalStateInner,
+        _threads: &ThreadManager<'_, 'tcx>,
     ) -> InterpResult<'tcx> {
         // Two main steps: Find granting item, remove incompatible items above.
 
@@ -427,6 +428,7 @@ impl<'tcx> Stack {
         new: Item,
         (alloc_id, alloc_range, offset): (AllocId, AllocRange, Size), // just for debug printing and error messages
         global: &GlobalStateInner,
+        threads: &ThreadManager<'_, 'tcx>,
     ) -> InterpResult<'tcx> {
         // Figure out which access `perm` corresponds to.
         let access =
@@ -454,7 +456,7 @@ impl<'tcx> Stack {
             // A "safe" reborrow for a pointer that actually expects some aliasing guarantees.
             // Here, creating a reference actually counts as an access.
             // This ensures F2b for `Unique`, by removing offending `SharedReadOnly`.
-            self.access(access, derived_from, (alloc_id, alloc_range, offset), global)?;
+            self.access(access, derived_from, (alloc_id, alloc_range, offset), global, threads)?;
 
             // We insert "as far up as possible": We know only compatible items are remaining
             // on top of `derived_from`, and we want the new item at the top so that we
@@ -630,6 +632,7 @@ impl Stacks {
         tag: SbTag,
         range: AllocRange,
         state: &GlobalState,
+        threads: &ThreadManager<'_, 'tcx>,
     ) -> InterpResult<'tcx> {
         trace!(
             "read access with tag {:?}: {:?}, size {}",
@@ -639,7 +642,7 @@ impl Stacks {
         );
         let global = &*state.borrow();
         self.for_each(range, move |offset, stack| {
-            stack.access(AccessKind::Read, tag, (alloc_id, range, offset), global)
+            stack.access(AccessKind::Read, tag, (alloc_id, range, offset), global, threads)
         })
     }
 
@@ -650,6 +653,7 @@ impl Stacks {
         tag: SbTag,
         range: AllocRange,
         state: &mut GlobalState,
+        threads: &ThreadManager<'_, 'tcx>,
     ) -> InterpResult<'tcx> {
         trace!(
             "write access with tag {:?}: {:?}, size {}",
@@ -659,7 +663,7 @@ impl Stacks {
         );
         let global = state.get_mut();
         self.for_each_mut(range, move |offset, stack| {
-            stack.access(AccessKind::Write, tag, (alloc_id, range, offset), global)
+            stack.access(AccessKind::Write, tag, (alloc_id, range, offset), global, threads)
         })
     }
 
@@ -765,7 +769,13 @@ trait EvalContextPrivExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                     };
                     let item = Item { perm, tag: new_tag, protector };
                     stacked_borrows.for_each(range, |offset, stack| {
-                        stack.grant(orig_tag, item, (alloc_id, range, offset), &*global)
+                        stack.grant(
+                            orig_tag,
+                            item,
+                            (alloc_id, range, offset),
+                            &*global,
+                            &this.machine.threads,
+                        )
                     })
                 })?;
                 return Ok(());
@@ -774,14 +784,14 @@ trait EvalContextPrivExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         // Here we can avoid `borrow()` calls because we have mutable references.
         // Note that this asserts that the allocation is mutable -- but since we are creating a
         // mutable pointer, that seems reasonable.
-        let (alloc_extra, memory_extra) = this.get_alloc_extra_mut(alloc_id)?;
+        let (alloc_extra, machine) = this.get_alloc_extra_mut(alloc_id)?;
         let stacked_borrows =
             alloc_extra.stacked_borrows.as_mut().expect("we should have Stacked Borrows data");
-        let global = memory_extra.stacked_borrows.as_mut().unwrap().get_mut();
+        let global = machine.stacked_borrows.as_mut().unwrap().get_mut();
         let item = Item { perm, tag: new_tag, protector };
         let range = alloc_range(base_offset, size);
         stacked_borrows.for_each_mut(alloc_range(base_offset, size), |offset, stack| {
-            stack.grant(orig_tag, item, (alloc_id, range, offset), global)
+            stack.grant(orig_tag, item, (alloc_id, range, offset), global, &machine.threads)
         })?;
         Ok(())
     }
