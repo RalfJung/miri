@@ -72,23 +72,18 @@ pub enum Permission {
     SharedReadWrite,
     /// Grants shared read-only access.
     SharedReadOnly,
-    /// Grants no access, but separates two groups of SharedReadWrite so they are not
-    /// all considered mutually compatible.
-    Disabled,
 }
 
 impl Permission {
     const UNIQUE: u64 = 0;
     const SHARED_READ_WRITE: u64 = 1;
     const SHARED_READ_ONLY: u64 = 2;
-    const DISABLED: u64 = 3;
 
     fn to_bits(self) -> u64 {
         match self {
             Permission::Unique => Self::UNIQUE,
             Permission::SharedReadWrite => Self::SHARED_READ_WRITE,
             Permission::SharedReadOnly => Self::SHARED_READ_ONLY,
-            Permission::Disabled => Self::DISABLED,
         }
     }
 
@@ -97,7 +92,6 @@ impl Permission {
             Self::UNIQUE => Permission::Unique,
             Self::SHARED_READ_WRITE => Permission::SharedReadWrite,
             Self::SHARED_READ_ONLY => Permission::SharedReadOnly,
-            Self::DISABLED => Permission::Disabled,
             _ => unreachable!(),
         }
     }

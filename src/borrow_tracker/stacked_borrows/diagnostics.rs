@@ -252,7 +252,7 @@ impl<'history, 'ecx, 'mir, 'tcx> DiagnosticCx<'history, 'ecx, 'mir, 'tcx> {
             .push(Creation { retag: op.clone(), span: self.machine.current_span() });
     }
 
-    pub fn log_invalidation(&mut self, tag: BorTag) {
+    pub fn log_invalidation(&mut self, tag: BorTag, freeze: bool) {
         let mut span = self.machine.current_span();
         let (range, cause) = match &self.operation {
             Operation::Retag(RetagOp { cause, range, permission, .. }) => {
@@ -447,7 +447,12 @@ impl<'history, 'ecx, 'mir, 'tcx> DiagnosticCx<'history, 'ecx, 'mir, 'tcx> {
     }
 
     #[inline(never)]
-    pub fn check_tracked_tag_popped(&self, item: &Item, global: &GlobalStateInner) {
+    pub fn check_tracked_tag_invalidated(
+        &self,
+        item: &Item,
+        global: &GlobalStateInner,
+        freeze: bool,
+    ) {
         if !global.tracked_pointer_tags.contains(&item.tag()) {
             return;
         }
@@ -474,10 +479,7 @@ fn operation_summary(operation: &str, alloc_id: AllocId, alloc_range: AllocRange
 
 fn error_cause(stack: &Stack, prov_extra: ProvenanceExtra) -> &'static str {
     if let ProvenanceExtra::Concrete(tag) = prov_extra {
-        if (0..stack.len())
-            .map(|i| stack.get(i).unwrap())
-            .any(|item| item.tag() == tag && item.perm() != Permission::Disabled)
-        {
+        if (0..stack.len()).map(|i| stack.get(i).unwrap()).any(|item| item.tag() == tag) {
             ", but that tag only grants SharedReadOnly permission for this location"
         } else {
             ", but that tag does not exist in the borrow stack for this location"

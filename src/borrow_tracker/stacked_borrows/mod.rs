@@ -182,7 +182,8 @@ pub fn err_sb_ub<'tcx>(
 /// We need to make at least the following things true:
 ///
 /// U1: After creating a `Uniq`, it is at the top.
-/// U2: If the top is `Uniq`, accesses must be through that `Uniq` or remove it.
+/// U2: If the top is `Uniq`, write accesses must be through that `Uniq` or remove it.
+///     Read accesses through other pointers must not permit further write accesses through the `Uniq`.
 /// U3: If an access happens with a `Uniq`, it requires the `Uniq` to be in the stack.
 ///
 /// F1: After creating a `&`, the parts outside `UnsafeCell` have our `SharedReadOnly` on top.
@@ -197,16 +198,15 @@ pub fn err_sb_ub<'tcx>(
 impl Permission {
     /// This defines for a given permission, whether it permits the given kind of access.
     fn grants(self, access: AccessKind) -> bool {
-        // Disabled grants nothing. Otherwise, all items grant read access, and except for SharedReadOnly they grant write access.
-        self != Permission::Disabled
-            && (access == AccessKind::Read || self != Permission::SharedReadOnly)
+        // All items grant read access, and except for SharedReadOnly they grant write access.
+        access == AccessKind::Read || self != Permission::SharedReadOnly
     }
 }
 
 /// Determines whether an item was invalidated by a conflicting access, or by deallocation.
 #[derive(Copy, Clone, Debug)]
 enum ItemInvalidationCause {
-    Conflict,
+    Access(AccessKind),
     Dealloc,
 }
 
@@ -218,7 +218,6 @@ impl<'tcx> Stack {
         let perm = self.get(granting).unwrap().perm();
         match perm {
             Permission::SharedReadOnly => bug!("Cannot use SharedReadOnly for writing"),
-            Permission::Disabled => bug!("Cannot use Disabled for anything"),
             Permission::Unique => {
                 // On a write, everything above us is incompatible.
                 granting + 1
@@ -240,16 +239,21 @@ impl<'tcx> Stack {
         }
     }
 
-    /// The given item was invalidated -- check its protectors for whether that will cause UB.
+    /// The given item was invalidated (either popped or frozen) -- check its protectors for whether that will cause UB.
+    ///
+    /// `cause` indicates what happened; if this is `Access(AccessKind::Read)` then the item remains
+    /// on the stack but is now read-only.
     fn item_invalidated(
         item: &Item,
         global: &GlobalStateInner,
         dcx: &mut DiagnosticCx<'_, '_, '_, 'tcx>,
         cause: ItemInvalidationCause,
     ) -> InterpResult<'tcx> {
+        let freeze = matches!(cause, ItemInvalidationCause::Access(AccessKind::Read));
         if !global.tracked_pointer_tags.is_empty() {
-            dcx.check_tracked_tag_popped(item, global);
+            dcx.check_tracked_tag_invalidated(item, global, freeze);
         }
+        dcx.log_invalidation(item.tag(), freeze);
 
         if !item.protected() {
             return Ok(());
@@ -315,19 +319,16 @@ impl<'tcx> Stack {
                 0
             };
             self.pop_items_after(first_incompatible_idx, |item| {
-                Stack::item_invalidated(&item, global, dcx, ItemInvalidationCause::Conflict)?;
-                dcx.log_invalidation(item.tag());
-                Ok(())
+                Stack::item_invalidated(&item, global, dcx, ItemInvalidationCause::Access(access))
             })?;
         } else {
-            // On a read, *disable* all `Unique` above the granting item.  This ensures U2 for read accesses.
-            // The reason this is not following the stack discipline (by removing the first Unique and
-            // everything on top of it) is that in `let raw = &mut *x as *mut _; let _val = *x;`, the second statement
-            // would pop the `Unique` from the reborrow of the first statement, and subsequently also pop the
-            // `SharedReadWrite` for `raw`.
-            // This pattern occurs a lot in the standard library: create a raw pointer, then also create a shared
-            // reference and use that.
-            // We *disable* instead of removing `Unique` to avoid "connecting" two neighbouring blocks of SRWs.
+            // On a read, *freeze* everything starting from the first `Unique` above the granting
+            // item.  This ensures U2 for read accesses. The reason this is not following the stack
+            // discipline (by removing the first Unique and everything on top of it) is that we want
+            // to allow reordering two reads with respect to each other: reading from a Unique
+            // first, and then from something further down the stack, must imply that we can reorder
+            // these operations, where now we first read from something further down (which freezes
+            // the Unique but keeps it on the stack) and then read from the Unique.
             let first_incompatible_idx = if let Some(granting_idx) = granting_idx {
                 // The granting_idx *might* be approximate, but any lower idx would disable more things.
                 granting_idx + 1
@@ -335,10 +336,8 @@ impl<'tcx> Stack {
                 // We are reading from something in the unknown part. That means *all* `Unique` we know about are dead now.
                 0
             };
-            self.disable_uniques_starting_at(first_incompatible_idx, |item| {
-                Stack::item_invalidated(&item, global, dcx, ItemInvalidationCause::Conflict)?;
-                dcx.log_invalidation(item.tag());
-                Ok(())
+            self.freeze_starting_at(first_incompatible_idx, |item| {
+                Stack::item_invalidated(&item, global, dcx, ItemInvalidationCause::Access(access))
             })?;
         }
 
@@ -349,11 +348,8 @@ impl<'tcx> Stack {
             let mut max = BorTag::one();
             for i in 0..self.len() {
                 let item = self.get(i).unwrap();
-                // Skip disabled items, they cannot be matched anyway.
-                if !matches!(item.perm(), Permission::Disabled) {
-                    // We are looking for a strict upper bound, so add 1 to this tag.
-                    max = cmp::max(item.tag().succ().unwrap(), max);
-                }
+                // We are looking for a strict upper bound, so add 1 to this tag.
+                max = cmp::max(item.tag().succ().unwrap(), max);
             }
             if let Some(unk) = self.unknown_bottom() {
                 max = cmp::max(unk, max);

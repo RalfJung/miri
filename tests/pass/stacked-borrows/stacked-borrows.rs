@@ -19,7 +19,7 @@ fn main() {
     array_casts();
     mut_below_shr();
     wide_raw_ptr_in_tuple();
-    not_unpin_not_protected();
+    reads_only_kill_reads();
 }
 
 // Make sure that reading from an `&mut` does, like reborrowing to `&`,
@@ -221,21 +221,12 @@ fn wide_raw_ptr_in_tuple() {
     r.type_id();
 }
 
-fn not_unpin_not_protected() {
-    // `&mut !Unpin`, at least for now, does not get `noalias` nor `dereferenceable`, so we also
-    // don't add protectors. (We could, but until we have a better idea for where we want to go with
-    // the self-referntial-generator situation, it does not seem worth the potential trouble.)
-    use std::marker::PhantomPinned;
-
-    pub struct NotUnpin(i32, PhantomPinned);
-
-    fn inner(x: &mut NotUnpin, f: fn(&mut NotUnpin)) {
-        // `f` may mutate, but it may not deallocate!
-        f(x)
+fn reads_only_kill_reads() {
+    unsafe {
+        let mut x = 0;
+        let p1 = ptr::addr_of_mut!(x);
+        let p2 = &mut *p1;
+        let _val = *p1; // read conflicts with p2
+        let _val = *p2; // but we can still read from p2 (just not write to it)
     }
-
-    inner(Box::leak(Box::new(NotUnpin(0, PhantomPinned))), |x| {
-        let raw = x as *mut _;
-        drop(unsafe { Box::from_raw(raw) });
-    });
 }

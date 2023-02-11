@@ -1,6 +1,3 @@
-#[cfg(feature = "stack-cache")]
-use std::ops::Range;
-
 use rustc_data_structures::fx::FxHashSet;
 
 use crate::borrow_tracker::{
@@ -36,10 +33,6 @@ pub struct Stack {
     /// A small LRU cache of searches of the borrow stack.
     #[cfg(feature = "stack-cache")]
     cache: StackCache,
-    /// On a read, we need to disable all `Unique` above the granting item. We can avoid most of
-    /// this scan by keeping track of the region of the borrow stack that may contain `Unique`s.
-    #[cfg(feature = "stack-cache")]
-    unique_range: Range<usize>,
 }
 
 impl Stack {
@@ -61,8 +54,6 @@ impl Stack {
             let should_keep = match this.perm() {
                 // SharedReadWrite is the simplest case, if it's unreachable we can just remove it.
                 Permission::SharedReadWrite => tags.contains(&this.tag()),
-                // Only retain a Disabled tag if it is terminating a SharedReadWrite block.
-                Permission::Disabled => left.perm() == Permission::SharedReadWrite,
                 // Unique and SharedReadOnly can terminate a SharedReadWrite block, so only remove
                 // them if they are both unreachable and not directly after a SharedReadWrite.
                 Permission::Unique | Permission::SharedReadOnly =>
@@ -87,12 +78,6 @@ impl Stack {
 
         #[cfg(feature = "stack-cache")]
         if let Some(first_removed) = first_removed {
-            // Either end of unique_range may have shifted, all we really know is that we can't
-            // have introduced a new Unique.
-            if !self.unique_range.is_empty() {
-                self.unique_range = 0..self.len();
-            }
-
             // Replace any Items which have been collected with the base item, a known-good value.
             for i in 0..CACHE_LEN {
                 if self.cache.idx[i] >= first_removed {
@@ -155,28 +140,6 @@ impl<'tcx> Stack {
                 assert_eq!(self.borrows[*stack_idx], *tag);
             }
         }
-
-        // Check that all Unique items fall within unique_range.
-        for (idx, item) in self.borrows.iter().enumerate() {
-            if item.perm() == Permission::Unique {
-                assert!(
-                    self.unique_range.contains(&idx),
-                    "{:?} {:?}",
-                    self.unique_range,
-                    self.borrows
-                );
-            }
-        }
-
-        // Check that the unique_range is a valid index into the borrow stack.
-        // This asserts that the unique_range's start <= end.
-        let _uniques = &self.borrows[self.unique_range.clone()];
-
-        // We cannot assert that the unique range is precise.
-        // Both ends may shift around when `Stack::retain` is called. Additionally,
-        // when we pop items within the unique range, setting the end of the range precisely
-        // requires doing a linear search of the borrow stack, which is exactly the kind of
-        // operation that all this caching exists to avoid.
     }
 
     /// Find the item granting the given kind of access to the given tag, and return where
@@ -294,25 +257,7 @@ impl<'tcx> Stack {
 
     #[cfg(feature = "stack-cache")]
     fn insert_cache(&mut self, new_idx: usize, new: Item) {
-        // Adjust the possibly-unique range if an insert occurs before or within it
-        if self.unique_range.start >= new_idx {
-            self.unique_range.start += 1;
-        }
-        if self.unique_range.end >= new_idx {
-            self.unique_range.end += 1;
-        }
-        if new.perm() == Permission::Unique {
-            // If this is the only Unique, set the range to contain just the new item.
-            if self.unique_range.is_empty() {
-                self.unique_range = new_idx..new_idx + 1;
-            } else {
-                // We already have other Unique items, expand the range to include the new item
-                self.unique_range.start = self.unique_range.start.min(new_idx);
-                self.unique_range.end = self.unique_range.end.max(new_idx + 1);
-            }
-        }
-
-        // The above insert changes the meaning of every index in the cache >= new_idx, so now
+        // The insert changes the meaning of every index in the cache >= new_idx, so now
         // we need to find every one of those indexes and increment it.
         // But if the insert is at the end (equivalent to a push), we can skip this step because
         // it didn't change the position of any other items.
@@ -338,8 +283,6 @@ impl<'tcx> Stack {
             unknown_bottom: None,
             #[cfg(feature = "stack-cache")]
             cache: StackCache { idx: [0; CACHE_LEN], items: [item; CACHE_LEN] },
-            #[cfg(feature = "stack-cache")]
-            unique_range: if item.perm() == Permission::Unique { 0..1 } else { 0..0 },
         }
     }
 
@@ -362,52 +305,28 @@ impl<'tcx> Stack {
         // cache when it has been cleared and not yet refilled.
         self.borrows.clear();
         self.unknown_bottom = Some(tag);
-        #[cfg(feature = "stack-cache")]
-        {
-            self.unique_range = 0..0;
-        }
     }
 
-    /// Find all `Unique` elements in this borrow stack above `granting_idx`, pass a copy of them
-    /// to the `visitor`, then set their `Permission` to `Disabled`.
-    pub fn disable_uniques_starting_at(
+    /// Find all writeable elements in this borrow stack above `granting_idx`, pass a copy of them
+    /// to the `visitor`, then set their `Permission` to `SharedReadOnly`.
+    pub fn freeze_starting_at(
         &mut self,
-        disable_start: usize,
+        freeze_start: usize,
         mut visitor: impl FnMut(Item) -> crate::InterpResult<'tcx>,
     ) -> crate::InterpResult<'tcx> {
-        #[cfg(feature = "stack-cache")]
-        let unique_range = self.unique_range.clone();
-        #[cfg(not(feature = "stack-cache"))]
-        let unique_range = 0..self.len();
-
-        if disable_start <= unique_range.end {
-            let lower = unique_range.start.max(disable_start);
-            let upper = unique_range.end;
-            for item in &mut self.borrows[lower..upper] {
-                if item.perm() == Permission::Unique {
-                    log::trace!("access: disabling item {:?}", item);
-                    visitor(*item)?;
-                    item.set_permission(Permission::Disabled);
-                    // Also update all copies of this item in the cache.
-                    #[cfg(feature = "stack-cache")]
-                    for it in &mut self.cache.items {
-                        if it.tag() == item.tag() {
-                            it.set_permission(Permission::Disabled);
-                        }
+        for item in &mut self.borrows[freeze_start..] {
+            if item.perm() != Permission::SharedReadOnly {
+                log::trace!("access: freezing item {:?}", item);
+                visitor(*item)?;
+                item.set_permission(Permission::SharedReadOnly);
+                // Also update all copies of this item in the cache.
+                #[cfg(feature = "stack-cache")]
+                for it in &mut self.cache.items {
+                    if it.tag() == item.tag() {
+                        it.set_permission(Permission::SharedReadOnly);
                     }
                 }
             }
-        }
-
-        #[cfg(feature = "stack-cache")]
-        if disable_start <= self.unique_range.start {
-            // We disabled all Unique items
-            self.unique_range.start = 0;
-            self.unique_range.end = 0;
-        } else {
-            // Truncate the range to only include items up to the index that we started disabling
-            // at.
-            self.unique_range.end = self.unique_range.end.min(disable_start);
         }
 
         #[cfg(all(feature = "stack-cache", debug_assertions))]
@@ -453,16 +372,6 @@ impl<'tcx> Stack {
                 self.cache.idx[i] = 0;
                 self.cache.items[i] = base_tag;
             }
-
-            if start <= self.unique_range.start {
-                // We removed all the Unique items
-                self.unique_range = 0..0;
-            } else {
-                // Ensure the range doesn't extend past the new top of the stack
-                self.unique_range.end = self.unique_range.end.min(start);
-            }
-        } else {
-            self.unique_range = 0..0;
         }
 
         #[cfg(all(feature = "stack-cache", debug_assertions))]
