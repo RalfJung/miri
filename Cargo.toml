@@ -18,6 +18,7 @@ test = false    # we have no unit tests
 doctest = false # and no doc tests
 
 [dependencies]
+miri-workspace-hack = { version = "0.1", path = "miri-workspace-hack" }
 getrandom = { version = "0.2", features = ["std"] }
 rand = "0.8"
 smallvec = { version = "1.7", features = ["drain_filter"] }

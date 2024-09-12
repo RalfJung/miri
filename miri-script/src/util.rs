@@ -126,9 +126,9 @@ impl MiriEnv {
 
     pub fn build(&self, crate_dir: impl AsRef<OsStr>, args: &[String], quiet: bool) -> Result<()> {
         let quiet_flag = if quiet { Some("--quiet") } else { None };
-        // We build the tests as well, (a) to avoid having rebuilds when building the tests later
-        // and (b) to have more parallelism during the build of Miri and its tests.
-        // This means `./miri run` without `--dep` will build Miri twice (for the sysroot with
+        // We build the tests as well, mostly to have more parallelism during the build of Miri and its tests.
+        // But this also avoids rebuilds if the miri-workspace-hack crate is out-of-date:
+        // `./miri run` without `--dep` will build Miri twice (for the sysroot with
         // dev-dependencies, and then for running without dev-dependencies), but the way more common
         // `./miri test` will avoid building Miri twice.
         let mut cmd = self

@@ -563,12 +563,29 @@ dependencies = [
  "libffi",
  "libloading",
  "measureme",
+ "miri-workspace-hack",
  "rand",
  "regex",
  "rustc_version",
  "smallvec",
  "tempfile",
  "ui_test",
+ "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "miri-workspace-hack"
+version = "0.1.0"
+dependencies = [
+ "bitflags",
+ "libc",
+ "phf_shared",
+ "rand",
+ "rand_core",
+ "regex",
+ "regex-automata",
+ "regex-syntax",
+ "windows-sys 0.48.0",
  "windows-sys 0.52.0",
 ]
 
