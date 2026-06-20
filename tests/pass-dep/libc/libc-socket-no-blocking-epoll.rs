@@ -25,6 +25,7 @@ fn main() {
     test_shutdown_read_write();
     test_shutdown_read();
     test_shutdown_write();
+    test_shutdown_write_full();
     test_readiness_after_short_read();
     test_readiness_after_short_read_after_shutdown();
     test_readiness_after_short_peek();
@@ -432,6 +433,73 @@ fn test_shutdown_write() {
     server_thread.join().unwrap();
 }
 
+/// Test that the EPOLLOUT readiness gets set when the write end of a socket
+/// is closed -- even when the socket write buffer is full.
+fn test_shutdown_write_full() {
+    let (server_sockfd, addr) = net::make_listener_ipv4().unwrap();
+    let client_sockfd =
+        unsafe { errno_result(libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0)).unwrap() };
+    let epfd = errno_result(unsafe { libc::epoll_create1(0) }).unwrap();
+
+    // Spawn the server thread.
+    let server_thread = thread::spawn(move || net::accept_ipv4(server_sockfd).unwrap());
+
+    net::connect_ipv4(client_sockfd, addr).unwrap();
+
+    unsafe {
+        // Change client socket to be non-blocking.
+        errno_check(libc::fcntl(client_sockfd, libc::F_SETFL, libc::O_NONBLOCK));
+    }
+
+    // The peer socket is a blocking socket.
+    server_thread.join().unwrap();
+
+    // Add client socket with "writable" and "write closed" interest to epoll.
+    epoll_ctl_add(epfd, client_sockfd, EPOLLET | EPOLLOUT | EPOLLHUP).unwrap();
+
+    // Wait until the socket becomes writable.
+    check_epoll_wait(epfd, &[Ev { events: EPOLLOUT, data: client_sockfd }], -1);
+
+    // We now want to fill the write buffer of the socket by repeatedly writing
+    // `buffer` into it. The last write should then be a short write.
+    // We assume/hope that the write buffer length is not divisible by 1039.
+    let buffer = [123u8; 1039];
+
+    loop {
+        let result = unsafe {
+            errno_result(libc::write(client_sockfd, buffer.as_ptr().cast(), buffer.len()))
+        };
+
+        match result {
+            Ok(bytes_written) => {
+                if (bytes_written as usize) < buffer.len() {
+                    // We had a short write; we thus assume the write buffer is full.
+                    break;
+                }
+            }
+            Err(err) if err.kind() == ErrorKind::WouldBlock => {
+                // Windows and Apple hosts behave weirdly when attempting to fill up the write buffer.
+                // Instead of doing a short write to completely fill the buffer, they can return an
+                // EWOULDBLOCK when the next write wouldn't fit into the buffer.
+                // When we get such an error, we also assume the write buffer is full.
+                break;
+            }
+            Err(err) => panic!("unexpected error whilst filling up buffer: {err}"),
+        }
+    }
+
+    // The write buffer is full; the socket should no longer be writable.
+    assert_eq!(current_epoll_readiness::<8>(client_sockfd, EPOLLOUT), 0);
+
+    // Close the socket write end.
+    unsafe {
+        errno_check(libc::shutdown(client_sockfd, libc::SHUT_WR));
+    }
+
+    // The socket should be "writable" again after its write end is closed.
+    check_epoll_wait(epfd, &[Ev { events: EPOLLOUT, data: client_sockfd }], -1);
+}
+
 /// Test that Miri correctly removes the readable readiness or emits a new edge after a short read.
 fn test_readiness_after_short_read() {
     let (server_sockfd, addr) = net::make_listener_ipv4().unwrap();
@@ -529,17 +597,6 @@ fn test_readiness_after_short_read_after_shutdown() {
 
         // Write `TEST_BYTES` into the stream.
         libc_utils::write_all(peerfd, TEST_BYTES).unwrap();
-
-        // Shutting down the write end of the peer socket should close
-        // the read end of the client socket.
-        unsafe {
-            errno_check(libc::shutdown(peerfd, libc::SHUT_WR));
-        }
-
-        // Add client socket with "read closed" interest to epoll.
-        epoll_ctl_add(epfd, client_sockfd, EPOLLET | EPOLLRDHUP).unwrap();
-        // Wait until the read end of the client socket is closed.
-        check_epoll_wait(epfd, &[Ev { events: EPOLLRDHUP, data: client_sockfd }], -1);
     });
 
     net::connect_ipv4(client_sockfd, addr).unwrap();
@@ -551,16 +608,15 @@ fn test_readiness_after_short_read_after_shutdown() {
 
     server_thread.join().unwrap();
 
-    // Update client socket interest to also include readable interest.
-    epoll_ctl(
-        epfd,
-        EPOLL_CTL_MOD,
-        client_sockfd,
-        Ev { events: EPOLLET | EPOLLIN | EPOLLRDHUP, data: client_sockfd },
-    )
-    .unwrap();
+    // Close the read end of the client socket.
+    unsafe {
+        errno_check(libc::shutdown(client_sockfd, libc::SHUT_RD));
+    }
 
-    // Wait until the socket becomes readable.
+    // Add client socket with "read closed" and "readable" interest to epoll.
+    epoll_ctl_add(epfd, client_sockfd, EPOLLET | EPOLLIN | EPOLLRDHUP).unwrap();
+
+    // Ensure that the socket is readable and that its read end is closed.
     check_epoll_wait(epfd, &[Ev { events: EPOLLIN | EPOLLRDHUP, data: client_sockfd }], -1);
 
     let mut buffer = [0u8; 1024];
@@ -596,19 +652,19 @@ fn test_readiness_after_short_read_after_shutdown() {
     // Because the read end of the socket is closed, we should still be able to
     // read to detect EOFs.
 
-    let mut buffer = [1u8; 16];
-    let bytes_read = unsafe {
-        errno_result(libc::read(client_sockfd, buffer.as_mut_ptr().cast(), buffer.len())).unwrap()
-    };
-    // The read should return 0, indicating EOF.
-    assert_eq!(bytes_read, 0);
-
     // Ensure that the "readable" and "read closed" readiness flags
     // are still set.
     assert_eq!(
         current_epoll_readiness::<8>(client_sockfd, EPOLLIN | EPOLLET | EPOLLRDHUP),
         EPOLLIN | EPOLLRDHUP
     );
+
+    let mut buffer = [1u8; 16];
+    let bytes_read = unsafe {
+        errno_result(libc::read(client_sockfd, buffer.as_mut_ptr().cast(), buffer.len())).unwrap()
+    };
+    // The read should return 0, indicating EOF.
+    assert_eq!(bytes_read, 0);
 }
 
 /// Test that Miri doesn't remove the readable readiness after a short peek.

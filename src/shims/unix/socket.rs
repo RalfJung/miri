@@ -1719,8 +1719,13 @@ trait EvalContextPrivExt<'tcx>: crate::MiriInterpCxExt<'tcx> {
                 // would be returned on UNIX-like systems. We thus remap this error to an EWOULDBLOCK.
                 interp_ok(Err(IoError::HostError(io::ErrorKind::WouldBlock.into())))
             }
-            Ok(bytes_written) if bytes_written < length => {
-                // We had a short write. On Unix hosts using the `epoll` and `kqueue` backends, a
+            Ok(bytes_written)
+                if bytes_written < length && !socket.io_readiness.borrow().write_closed =>
+            {
+                // We had a short write. (Note that we don't want to clear the writable readiness for
+                // sockets whose write end has already been closed as those never block a write, i.e.,
+                // they are always write-ready -- even though the writes fail with EPIPE.)
+                // On Unix hosts using the `epoll` and `kqueue` backends, a
                 // short write means that the write buffer is full. We update the readiness
                 // accordingly, which means that next time we see "writable" we will report an epoll
                 // edge. Some applications (e.g. tokio) rely on this behavior; see
@@ -1861,7 +1866,7 @@ trait EvalContextPrivExt<'tcx>: crate::MiriInterpCxExt<'tcx> {
                 // We had a short read (and were not peeking). (Note that reading 0 bytes is guaranteed
                 // to indicate EOF, and can never happen spuriously, so we have to exclude that case.
                 // We also don't want to clear the readable readiness for sockets whose read end has
-                // already been closed as this would prevent us from reading the EOF.)
+                // already been closed as those never block a read, i.e., they are always read-ready.)
                 // On Unix hosts using the `epoll` and `kqueue` backends, a short read means that the
                 // read buffer is empty. We update the readiness accordingly, which means that next time
                 // we see "readable" we will report an epoll edge. Some applications (e.g. tokio) rely on
