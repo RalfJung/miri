@@ -597,6 +597,9 @@ fn test_readiness_after_short_read_after_shutdown() {
 
         // Write `TEST_BYTES` into the stream.
         libc_utils::write_all(peerfd, TEST_BYTES).unwrap();
+        // Return peerfd from the server thread to prevent it from
+        // being closed early.
+        peerfd
     });
 
     net::connect_ipv4(client_sockfd, addr).unwrap();
@@ -606,7 +609,7 @@ fn test_readiness_after_short_read_after_shutdown() {
         errno_check(libc::fcntl(client_sockfd, libc::F_SETFL, libc::O_NONBLOCK));
     }
 
-    server_thread.join().unwrap();
+    let _peerfd = server_thread.join().unwrap();
 
     // Close the read end of the client socket.
     unsafe {
