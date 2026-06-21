@@ -1,5 +1,8 @@
 //@only-target: linux android illumos
 //@compile-flags: -Zmiri-disable-isolation
+//@revisions: windows_host unix_host
+//@[unix_host] ignore-host: windows
+//@[windows_host] only-host: windows
 //@run-native
 
 #![feature(io_error_inprogress)]
@@ -27,7 +30,12 @@ fn main() {
     test_shutdown_write();
     test_shutdown_write_full();
     test_readiness_after_short_read();
-    test_readiness_after_short_read_after_shutdown();
+    if !cfg!(windows_host) {
+        // Shutting down the read end of a socket sets
+        // EPOLLHUP on Windows hosts which isn't set on
+        // Unix hosts.
+        test_readiness_after_short_read_after_shutdown();
+    }
     test_readiness_after_short_peek();
     test_readiness_after_short_write();
 }
@@ -597,9 +605,6 @@ fn test_readiness_after_short_read_after_shutdown() {
 
         // Write `TEST_BYTES` into the stream.
         libc_utils::write_all(peerfd, TEST_BYTES).unwrap();
-        // Return peerfd from the server thread to prevent it from
-        // being closed early.
-        peerfd
     });
 
     net::connect_ipv4(client_sockfd, addr).unwrap();
@@ -609,7 +614,7 @@ fn test_readiness_after_short_read_after_shutdown() {
         errno_check(libc::fcntl(client_sockfd, libc::F_SETFL, libc::O_NONBLOCK));
     }
 
-    let _peerfd = server_thread.join().unwrap();
+    server_thread.join().unwrap();
 
     // Close the read end of the client socket.
     unsafe {
