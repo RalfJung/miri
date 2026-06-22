@@ -1724,7 +1724,7 @@ trait EvalContextPrivExt<'tcx>: crate::MiriInterpCxExt<'tcx> {
             {
                 // We had a short write. (Note that we don't want to clear the writable readiness for
                 // sockets whose write end has already been closed as those never block a write, i.e.,
-                // they are always write-ready -- even though the writes fail with EPIPE.)
+                // they are always write-ready.)
                 // On Unix hosts using the `epoll` and `kqueue` backends, a
                 // short write means that the write buffer is full. We update the readiness
                 // accordingly, which means that next time we see "writable" we will report an epoll

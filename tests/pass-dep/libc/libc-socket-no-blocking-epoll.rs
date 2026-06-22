@@ -449,21 +449,16 @@ fn test_shutdown_write_full() {
         unsafe { errno_result(libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0)).unwrap() };
     let epfd = errno_result(unsafe { libc::epoll_create1(0) }).unwrap();
 
-    // Spawn the server thread.
-    let server_thread = thread::spawn(move || net::accept_ipv4(server_sockfd).unwrap());
-
     net::connect_ipv4(client_sockfd, addr).unwrap();
+    net::accept_ipv4(server_sockfd).unwrap();
 
     unsafe {
         // Change client socket to be non-blocking.
         errno_check(libc::fcntl(client_sockfd, libc::F_SETFL, libc::O_NONBLOCK));
     }
 
-    // The peer socket is a blocking socket.
-    server_thread.join().unwrap();
-
     // Add client socket with "writable" and "write closed" interest to epoll.
-    epoll_ctl_add(epfd, client_sockfd, EPOLLET | EPOLLOUT | EPOLLHUP).unwrap();
+    epoll_ctl_add(epfd, client_sockfd, EPOLLOUT | EPOLLHUP).unwrap();
 
     // Wait until the socket becomes writable.
     check_epoll_wait(epfd, &[Ev { events: EPOLLOUT, data: client_sockfd }], -1);
@@ -496,15 +491,15 @@ fn test_shutdown_write_full() {
         }
     }
 
-    // The write buffer is full; the socket should no longer be writable.
-    assert_eq!(current_epoll_readiness::<8>(client_sockfd, EPOLLOUT), 0);
+    // The write buffer is full; the socket would now block on writes, i.e. readiness is 0.
+    check_epoll_wait(epfd, &[], 0);
 
     // Close the socket write end.
     unsafe {
         errno_check(libc::shutdown(client_sockfd, libc::SHUT_WR));
     }
 
-    // The socket should be "writable" again after its write end is closed.
+    // The socket should no longer block on writes after its write end is closed.
     check_epoll_wait(epfd, &[Ev { events: EPOLLOUT, data: client_sockfd }], -1);
 }
 
@@ -671,7 +666,7 @@ fn test_readiness_after_short_read_after_shutdown() {
     let bytes_read = unsafe {
         errno_result(libc::read(client_sockfd, buffer.as_mut_ptr().cast(), buffer.len())).unwrap()
     };
-    // The read should return 0, indicating EOF.
+    // The read should not block and return 0, indicating EOF.
     assert_eq!(bytes_read, 0);
 }
 
@@ -723,23 +718,13 @@ fn test_readiness_after_short_write() {
         unsafe { errno_result(libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0)).unwrap() };
     let epfd = errno_result(unsafe { libc::epoll_create1(0) }).unwrap();
 
-    // Spawn the server thread.
-    let server_thread = thread::spawn(move || {
-        let (peerfd, _) = net::accept_ipv4(server_sockfd).unwrap();
-        // Return the peer socket file descriptor such that we can use
-        // it after joining the server thread.
-        peerfd
-    });
-
     net::connect_ipv4(client_sockfd, addr).unwrap();
+    let (peerfd, _) = net::accept_ipv4(server_sockfd).unwrap();
 
     unsafe {
         // Change client socket to be non-blocking.
         errno_check(libc::fcntl(client_sockfd, libc::F_SETFL, libc::O_NONBLOCK));
     }
-
-    // The peer socket is a blocking socket.
-    let peerfd = server_thread.join().unwrap();
 
     // Add client socket with writable interest to epoll.
     epoll_ctl_add(epfd, client_sockfd, EPOLLET | EPOLLOUT).unwrap();
