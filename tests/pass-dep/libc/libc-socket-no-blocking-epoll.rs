@@ -684,6 +684,26 @@ fn test_readable_after_read_shutdown_and_short_read() {
 
     let mut buffer = [0u8; 1024];
 
+    if cfg!(windows_host) {
+        // Because the TCP connection has been reset on Windows hosts,
+        // we cannot read anything from the client socket anymore.
+        // We thus only test that the connection has indeed been reset
+        // and then we return from the test.
+        let err = unsafe {
+            errno_result(libc::read(
+                client_sockfd,
+                buffer.as_mut_ptr().byte_add(total_bytes_read).cast(),
+                // Read a chunk of 16 bytes.
+                16,
+            ))
+            .unwrap_err()
+        };
+        assert_eq!(err.kind(), ErrorKind::ConnectionAborted);
+        return;
+    }
+
+    // We're not on a Windows host.
+
     // We want to read in chunks of 16 bytes. To ensure we get a short read, `TEST_BYTES.len()`
     // must not be dividable by 16.
     assert!(TEST_BYTES.len() % 16 != 0);
@@ -716,7 +736,10 @@ fn test_readable_after_read_shutdown_and_short_read() {
     // read to detect EOFs.
 
     // Ensure that the "readable" and "read closed" readiness flags are still set.
-    assert_eq!(current_epoll_readiness::<8>(client_sockfd, EPOLLIN | EPOLLET | EPOLLRDHUP), events);
+    assert_eq!(
+        current_epoll_readiness::<8>(client_sockfd, EPOLLIN | EPOLLET | EPOLLRDHUP),
+        EPOLLIN | EPOLLRDHUP
+    );
 
     let mut buffer = [1u8; 16];
     let bytes_read = unsafe {
