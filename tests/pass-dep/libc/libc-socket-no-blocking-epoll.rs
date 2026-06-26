@@ -692,8 +692,8 @@ fn test_readable_after_read_shutdown_and_short_read() {
         let err = unsafe {
             errno_result(libc::read(
                 client_sockfd,
-                buffer.as_mut_ptr().byte_add(total_bytes_read).cast(),
-                // Read a chunk of 16 bytes.
+                buffer.as_mut_ptr().cast(),
+                // Attempt to read a chunk of 16 bytes.
                 16,
             ))
             .unwrap_err()
