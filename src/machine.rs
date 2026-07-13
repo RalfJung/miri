@@ -1795,12 +1795,13 @@ impl<'tcx> Machine<'tcx> for MiriMachine<'tcx> {
         }
 
         // Search for BorTags to find all live pointers, then remove all other tags from borrow
-        // stacks.
+        // stacks. Also clean up destroyed source file descriptions in the blocking I/O manager.
         // When debug assertions are enabled, run the GC as often as possible so that any cases
         // where it mistakenly removes an important tag become visible.
         if ecx.machine.gc_interval > 0 && ecx.machine.since_gc >= ecx.machine.gc_interval {
             ecx.machine.since_gc = 0;
             ecx.run_provenance_gc();
+            ecx.machine.blocking_io.run_gc();
         }
 
         // These are our preemption points.

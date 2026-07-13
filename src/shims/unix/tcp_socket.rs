@@ -11,7 +11,7 @@ use rustc_const_eval::interpret::{InterpResult, interp_ok};
 use rustc_middle::throw_unsup_format;
 use rustc_target::spec::Os;
 
-use crate::shims::files::{EvalContextExt as _, FdId, FdNum, FileDescription, FileDescriptionRef};
+use crate::shims::files::{EvalContextExt as _, FdNum, FileDescription, FileDescriptionRef};
 use crate::shims::unix::UnixFileDescription;
 use crate::shims::unix::socket::{SocketFamily, UnixSocketFileDescription};
 use crate::*;
@@ -89,29 +89,6 @@ impl TcpSocket {
 impl FileDescription for TcpSocket {
     fn name(&self) -> &'static str {
         "socket"
-    }
-
-    fn destroy<'tcx>(
-        self,
-        self_id: FdId,
-        communicate_allowed: bool,
-        ecx: &mut MiriInterpCx<'tcx>,
-    ) -> InterpResult<'tcx, io::Result<()>> {
-        assert!(communicate_allowed, "cannot have `TcpSocket` with isolation enabled!");
-
-        if matches!(
-            &*self.state.borrow(),
-            SocketState::Listening(_)
-                | SocketState::Connecting(_)
-                | SocketState::Connected(_)
-                | SocketState::ConnectionFailed(_)
-        ) {
-            // There exists an associated host socket so we need to deregister it
-            // from the blocking I/O manager.
-            ecx.machine.blocking_io.deregister(self_id, self)
-        };
-
-        interp_ok(Ok(()))
     }
 
     fn read<'tcx>(
