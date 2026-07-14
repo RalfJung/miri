@@ -90,6 +90,12 @@ impl<T: ?Sized> WeakFileDescriptionRef<T> {
     pub fn upgrade(&self) -> Option<FileDescriptionRef<T>> {
         self.0.upgrade().map(FileDescriptionRef)
     }
+
+    /// Returns whether the file description that this weak reference points to
+    /// has been closed, i.e., there are no more strong references.
+    pub fn is_closed(&self) -> bool {
+        self.0.strong_count() == 0
+    }
 }
 
 impl<T> VisitProvenance for WeakFileDescriptionRef<T> {
@@ -127,8 +133,8 @@ impl<T: FileDescription + 'static> FileDescriptionExt for T {
     ) -> InterpResult<'tcx, io::Result<()>> {
         match Rc::into_inner(self.0) {
             Some(fd) => {
-                // There might have been epolls interested in this FD. Remove that.
-                ecx.machine.epoll_interests.remove_epolls(fd.id);
+                // There might have been readiness watchers interested in this FD. Remove them.
+                ecx.machine.readiness_interests.remove_watchers_for_fd(fd.id);
 
                 fd.inner.destroy(fd.id, communicate_allowed, ecx)
             }
@@ -205,7 +211,8 @@ pub trait FileDescription: std::fmt::Debug + FileDescriptionExt {
 
     /// Destroys the file description. Only called when the last duplicate file descriptor is closed.
     ///
-    /// `self_addr` is the address that this file description used to be stored at.
+    /// Note that if you do anything here you must also make sure that any time you drop
+    /// a `FileDescriptionRef` for your description type, that is dropped via `close_ref`!
     fn destroy<'tcx>(
         self,
         _self_id: FdId,
@@ -215,7 +222,7 @@ pub trait FileDescription: std::fmt::Debug + FileDescriptionExt {
     where
         Self: Sized,
     {
-        throw_unsup_format!("cannot close {}", self.name());
+        interp_ok(Ok(()))
     }
 
     /// Returns the metadata for this FD, if available.
@@ -232,7 +239,10 @@ pub trait FileDescription: std::fmt::Debug + FileDescriptionExt {
         false
     }
 
-    fn as_unix<'tcx>(&self, _ecx: &MiriInterpCx<'tcx>) -> &dyn UnixFileDescription {
+    fn as_unix<'tcx>(
+        self: FileDescriptionRef<Self>,
+        _ecx: &MiriInterpCx<'tcx>,
+    ) -> FileDescriptionRef<dyn UnixFileDescription> {
         panic!("Not a unix file descriptor: {}", self.name());
     }
 
@@ -248,6 +258,11 @@ pub trait FileDescription: std::fmt::Debug + FileDescriptionExt {
         _ecx: &mut MiriInterpCx<'tcx>,
     ) -> InterpResult<'tcx, Scalar> {
         throw_unsup_format!("fcntl: {} is not supported for F_SETFL", self.name());
+    }
+
+    /// Get the current I/O readiness of the file description.
+    fn readiness<'tcx>(&self) -> InterpResult<'tcx, Readiness> {
+        throw_unsup_format!("{}: this file description doesn't support I/O readiness", self.name());
     }
 }
 
@@ -272,15 +287,6 @@ impl FileDescription for io::Stdin {
         let mut stdin = &*self;
         let result = ecx.read_from_host(|buf| stdin.read(buf), len, ptr)?;
         finish.call(ecx, result)
-    }
-
-    fn destroy<'tcx>(
-        self,
-        _self_id: FdId,
-        _communicate_allowed: bool,
-        _ecx: &mut MiriInterpCx<'tcx>,
-    ) -> InterpResult<'tcx, io::Result<()>> {
-        interp_ok(Ok(()))
     }
 
     fn is_tty(&self, communicate_allowed: bool) -> bool {
@@ -313,15 +319,6 @@ impl FileDescription for io::Stdout {
         finish.call(ecx, result)
     }
 
-    fn destroy<'tcx>(
-        self,
-        _self_id: FdId,
-        _communicate_allowed: bool,
-        _ecx: &mut MiriInterpCx<'tcx>,
-    ) -> InterpResult<'tcx, io::Result<()>> {
-        interp_ok(Ok(()))
-    }
-
     fn is_tty(&self, communicate_allowed: bool) -> bool {
         communicate_allowed && self.is_terminal()
     }
@@ -330,15 +327,6 @@ impl FileDescription for io::Stdout {
 impl FileDescription for io::Stderr {
     fn name(&self) -> &'static str {
         "stderr"
-    }
-
-    fn destroy<'tcx>(
-        self,
-        _self_id: FdId,
-        _communicate_allowed: bool,
-        _ecx: &mut MiriInterpCx<'tcx>,
-    ) -> InterpResult<'tcx, io::Result<()>> {
-        interp_ok(Ok(()))
     }
 
     fn write<'tcx>(
@@ -465,7 +453,10 @@ impl FileDescription for FileHandle {
         true
     }
 
-    fn as_unix<'tcx>(&self, ecx: &MiriInterpCx<'tcx>) -> &dyn UnixFileDescription {
+    fn as_unix<'tcx>(
+        self: FileDescriptionRef<Self>,
+        ecx: &MiriInterpCx<'tcx>,
+    ) -> FileDescriptionRef<dyn UnixFileDescription> {
         assert!(
             ecx.target_os_is_unix(),
             "unix file operations are only available for unix targets"
@@ -496,15 +487,6 @@ impl FileDescription for DirHandle {
         #[cfg(bootstrap)]
         return interp_ok(Either::Left(std::fs::metadata(&self.path)));
     }
-
-    fn destroy<'tcx>(
-        self,
-        _self_id: FdId,
-        _communicate_allowed: bool,
-        _ecx: &mut MiriInterpCx<'tcx>,
-    ) -> InterpResult<'tcx, io::Result<()>> {
-        interp_ok(Ok(()))
-    }
 }
 
 /// Like /dev/null
@@ -526,15 +508,6 @@ impl FileDescription for NullOutput {
     ) -> InterpResult<'tcx> {
         // We just don't write anything, but report to the user that we did.
         finish.call(ecx, Ok(len))
-    }
-
-    fn destroy<'tcx>(
-        self,
-        _self_id: FdId,
-        _communicate_allowed: bool,
-        _ecx: &mut MiriInterpCx<'tcx>,
-    ) -> InterpResult<'tcx, io::Result<()>> {
-        interp_ok(Ok(()))
     }
 }
 
