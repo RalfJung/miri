@@ -919,7 +919,7 @@ fn test_unblock_after_socket_close() {
     let server_thread = thread::spawn(move || {
         // Ensure main thread is blocked on reading from
         // the client socket.
-        thread::sleep(Duration::from_millis(50));
+        thread::sleep(Duration::from_millis(5000));
 
         unsafe { errno_check(libc::close(client_sockfd)) };
 
