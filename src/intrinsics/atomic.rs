@@ -25,7 +25,7 @@ pub trait EvalContextExt<'tcx>: crate::MiriInterpCxExt<'tcx> {
         intrinsic_name: &str,
         generic_args: ty::GenericArgsRef<'tcx>,
         args: &[OpTy<'tcx>],
-        dest: &MPlaceTy<'tcx>,
+        dest: &PlaceTy<'tcx>,
     ) -> InterpResult<'tcx, EmulateItemResult> {
         let this = self.eval_context_mut();
 
@@ -201,7 +201,7 @@ trait EvalContextPrivExt<'tcx>: MiriInterpCxExt<'tcx> {
     fn atomic_load(
         &mut self,
         args: &[OpTy<'tcx>],
-        dest: &MPlaceTy<'tcx>,
+        dest: &PlaceTy<'tcx>,
         atomic: AtomicReadOrd,
     ) -> InterpResult<'tcx> {
         let this = self.eval_context_mut();
@@ -254,7 +254,7 @@ trait EvalContextPrivExt<'tcx>: MiriInterpCxExt<'tcx> {
     fn atomic_rmw_op(
         &mut self,
         args: &[OpTy<'tcx>],
-        dest: &MPlaceTy<'tcx>,
+        dest: &PlaceTy<'tcx>,
         atomic_op: AtomicRmwOp,
         ord: AtomicRwOrd,
     ) -> InterpResult<'tcx> {
@@ -282,7 +282,7 @@ trait EvalContextPrivExt<'tcx>: MiriInterpCxExt<'tcx> {
     fn atomic_exchange(
         &mut self,
         args: &[OpTy<'tcx>],
-        dest: &MPlaceTy<'tcx>,
+        dest: &PlaceTy<'tcx>,
         atomic: AtomicRwOrd,
     ) -> InterpResult<'tcx> {
         let this = self.eval_context_mut();
@@ -299,7 +299,7 @@ trait EvalContextPrivExt<'tcx>: MiriInterpCxExt<'tcx> {
     fn atomic_compare_exchange_impl(
         &mut self,
         args: &[OpTy<'tcx>],
-        dest: &MPlaceTy<'tcx>,
+        dest: &PlaceTy<'tcx>,
         success: AtomicRwOrd,
         fail: AtomicReadOrd,
         can_fail_spuriously: bool,
@@ -328,7 +328,7 @@ trait EvalContextPrivExt<'tcx>: MiriInterpCxExt<'tcx> {
     fn atomic_compare_exchange(
         &mut self,
         args: &[OpTy<'tcx>],
-        dest: &MPlaceTy<'tcx>,
+        dest: &PlaceTy<'tcx>,
         success: AtomicRwOrd,
         fail: AtomicReadOrd,
     ) -> InterpResult<'tcx> {
@@ -338,7 +338,7 @@ trait EvalContextPrivExt<'tcx>: MiriInterpCxExt<'tcx> {
     fn atomic_compare_exchange_weak(
         &mut self,
         args: &[OpTy<'tcx>],
-        dest: &MPlaceTy<'tcx>,
+        dest: &PlaceTy<'tcx>,
         success: AtomicRwOrd,
         fail: AtomicReadOrd,
     ) -> InterpResult<'tcx> {
