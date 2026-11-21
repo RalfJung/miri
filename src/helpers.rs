@@ -319,6 +319,7 @@ pub trait EvalContextExt<'tcx>: crate::MiriInterpCxExt<'tcx> {
     /// Write an int of the appropriate size to `dest`. The target type may be signed or unsigned,
     /// we try to do the right thing anyway. `i128` can fit all integer types except for `u128` so
     /// this method is fine for almost all integer types.
+    #[track_caller]
     fn write_int(
         &mut self,
         i: impl Into<i128>,
@@ -365,6 +366,34 @@ pub trait EvalContextExt<'tcx>: crate::MiriInterpCxExt<'tcx> {
             ecx.write_int(val, &field)?;
         }
         interp_ok(())
+    }
+
+    /// Read `val` as an integer at the type given in its layout, then convert the result to `T`.
+    #[track_caller]
+    fn read_int<T: TryFrom<i128>>(
+        &self,
+        val: &impl Projectable<'tcx, Provenance>,
+    ) -> InterpResult<'tcx, T> {
+        let ecx = self.eval_context_ref();
+        let scalar = ecx.read_scalar(val)?;
+
+        let size = val.layout().size;
+        // Sanity-check that T is big enough, so we catch too-small Miri host types without having
+        // to actually pass in an extreme value.
+        // FIXME: can we also check the sign?
+        if size_of::<T>() < size.bytes_usize() {
+            panic!(
+                "reading value of machine type {} which does not fit into the chosen host type",
+                val.layout().ty
+            );
+        }
+        let int = if val.layout().backend_repr.is_signed() {
+            scalar.to_int(size)?
+        } else {
+            // Can only fail for values beyond i128::MAX
+            i128::try_from(scalar.to_uint(size)?).unwrap()
+        };
+        interp_ok(int.try_into().ok().expect("value should fit into Miri-chosen type"))
     }
 
     /// Test if this pointer equals 0.
